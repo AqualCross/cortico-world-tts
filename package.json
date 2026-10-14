@@ -1,0 +1,53 @@
+{
+  "name": "cortico-world-tts",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "语音工坊（Voice Studio）—— 给 Coopanion 桌宠的 cortico World 扩展：把文字合成为语音，音频落盘并作为附件交回对话。 / A cortico World extension that turns text into speech through a configurable TTS API and returns the audio as a conversation attachment.",
+  "license": "MIT",
+  "author": {
+    "name": "AqualCross"
+  },
+  "homepage": "https://github.com/AqualCross/cortico-world-tts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AqualCross/cortico-world-tts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AqualCross/cortico-world-tts/issues"
+  },
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "coopanion",
+    "tts",
+    "text-to-speech",
+    "speech-synthesis",
+    "openai-compatible",
+    "qwen"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "selfcheck": "node tools/check.mjs",
+    "prepublishOnly": "node tools/check.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 5,
+    "displayName": "语音工坊",
+    "consoleClient": "dist/console.js"
+  }
+}
