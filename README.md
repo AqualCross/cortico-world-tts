@@ -247,6 +247,11 @@ cortico-world-tts/
 - 音色不能跨模型；换 `model` 记得一起换 `voice`。
 - `protocol: openai` 下 `instruction` / `seed` 不适用；`format` 只支持 `mp3` / `wav` / `ogg`。
 
+## 致谢
+
+目录结构、扩展骨架与部分实现（语音仓库、dry-mount 检查等）改编自
+[cortico-world-image](https://github.com/Lostdegree/cortico-world-image)（MIT），在此致谢。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。若内容涉及对外发布，请自行评估并遵守所在地区对 AI 生成内容的标识要求。
