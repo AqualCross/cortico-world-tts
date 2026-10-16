@@ -1,12 +1,12 @@
 /**
- * 语音工坊的配置段与文案。
+ * 文本转语音的配置段与文案。
  *
- * 段名是 `config.json` 的 `worlds.tts`。控制台热改就地写这个对象，
+ * 段名是 `config.json` 的 `worlds.tts`。WebUI 热改就地写这个对象，
  * World 每次用时现读，所以这里只有默认值与 schema，不持有副本。
  */
 
 export const ID = 'tts';
-export const LABEL = '语音工坊';
+export const LABEL = '文本转语音';
 
 /** `worlds.tts` 段的默认值；键名与 configGroup 里的路径一一对应。 */
 export const DEFAULTS = Object.freeze({
@@ -31,7 +31,7 @@ export const DEFAULTS = Object.freeze({
 export const SAMPLE_RATES = Object.freeze([8000, 12000, 16000, 22050, 24000, 44100, 48000]);
 
 const ZH = {
-  label: '语音工坊',
+  label: '文本转语音',
   lamp: '语音接口',
   badgeClips: '作品',
   badgeKey: '密钥',
@@ -47,8 +47,8 @@ const ZH = {
   readyNoKey: '未填密钥',
   readyNoVoice: '未选音色',
   config: {
-    title: '语音工坊',
-    enabled: '启用语音工坊',
+    title: '文本转语音',
+    enabled: '启用文本转语音',
     enabledDesc: '开启后桌宠才拿到 tts_speak 工具。',
     protocol: '接口协议',
     protocolDesc: '接口形状。',
@@ -82,7 +82,7 @@ const ZH = {
 };
 
 const EN = {
-  label: 'Voice Studio',
+  label: 'Text to Speech',
   lamp: 'TTS API',
   badgeClips: 'Clips',
   badgeKey: 'API key',
@@ -98,8 +98,8 @@ const EN = {
   readyNoKey: 'no API key',
   readyNoVoice: 'no voice selected',
   config: {
-    title: 'Voice Studio',
-    enabled: 'Enable Voice Studio',
+    title: 'Text to Speech',
+    enabled: 'Enable Text to Speech',
     enabledDesc: 'Turns on the tts_speak tool for the bot.',
     protocol: 'Protocol',
     protocolDesc: 'Request shape.',
@@ -136,7 +136,7 @@ export function text(language = 'zh') {
   return language === 'en' ? EN : ZH;
 }
 
-/** 控制台的配置组；路径必须落在 `worlds.tts.` 段内，且每个键都在 DEFAULTS 里有对应项。 */
+/** WebUI 的配置组；路径必须落在 `worlds.tts.` 段内，且每个键都在 DEFAULTS 里有对应项。 */
 export function configGroup(language = 'zh') {
   const t = text(language).config;
   const K = `worlds.${ID}`;

@@ -1,8 +1,8 @@
-# 语音工坊 · cortico-world-tts
+# 文本转语音 · cortico-world-tts
 
 给 Coopanion 桌宠加一件事：**把文字合成为语音**。支持两种接口形状（SpeechSynthesizer 与 OpenAI 兼容的 `/v1/audio/speech`，后者可以接本地模型），音频落盘、作为附件进入对话，回执里带绝对路径和附件句柄。
 
-这是一个 `cortico` 的 **World 扩展**（`kind: world`，`api: 5`），只补一个 `tts` 世界，
+这是一个 `cortico` 的 **World 扩展**（`kind: world`，`api: 6`），只补一个 `tts` 世界，
 不依赖任何第三方 npm 包（纯 ESM JS + Node 内置模块）。
 
 > **它不播放声音，也不自己发送。** 出声与发送是别的工具的事；这份扩展只负责把语音*合成出来*，
@@ -23,7 +23,7 @@
 1. **进对话**：工具回执带 `blobs`，Core 会把它存成句柄，并在模型可见的回执里留一行 `[blob log:… .wav audio/wav]`。
 2. **发给别人**：把那个句柄交给渠道工具。例如官方 QQ 世界的 `qq_draft`：
    `{"voice": "log:xxxx.wav"}` 就能发一条语音条（语音条是独立一条消息，`text`、`image`、`reply_to` 都留空）。
-3. **自己听**：控制台「语音工坊 → 作品」页点「试听」；或者把回执里的绝对路径交给本地播放工具。
+3. **自己听**：控制台「文本转语音 → 作品」页点「试听」；或者把回执里的绝对路径交给本地播放工具。
 
 ## 安装
 
@@ -75,11 +75,11 @@ pnpm add "D:\path\to\cortico-world-tts" --ignore-workspace
 `config.json`（例如存成 `config.json.bak-tts-<时间戳>`）。
 
 **改完必须重启 Coopanion**：扩展是 ESM 模块，进程内不会重新加载。重启后控制台
-左栏会多出「语音工坊」，「作品」页看合成过的音频、「状态」页改配置与密钥。
+左栏会多出「文本转语音」，「作品」页看合成过的音频、「状态」页改配置与密钥。
 
 ## 配置
 
-都在 `worlds.tts` 段，控制台「语音工坊 → 状态」里改了就地生效，不用重启：
+都在 `worlds.tts` 段，控制台「文本转语音 → 状态」里改了就地生效，不用重启：
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ pnpm add "D:\path\to\cortico-world-tts" --ignore-workspace
 
 密钥**不写进 `config.json`**。两种填法：
 
-- 控制台 →「语音工坊 → 状态」→ 把 key 粘进输入框 → 保存。它会写进 `<bot 目录>/.env` 的
+- 控制台 →「文本转语音 → 状态」→ 把 key 粘进输入框 → 保存。它会写进 `<bot 目录>/.env` 的
   `AUDIO_API_KEY=...`，并立刻在这次进程里生效。
 - 自己在那份 `.env` 里写一行 `AUDIO_API_KEY=sk-...`，然后重启。
 
@@ -215,17 +215,19 @@ node tools/live.mjs        # 可加 LIVE_BASE_URL / LIVE_MODEL / LIVE_VOICE / LI
 
 ```
 cortico-world-tts/
-├─ package.json        # cortico: { kind: world, api: 5, consoleClient: dist/console.js }
+├─ package.json        # cortico: { kind: world, api: 6, webUiClient: dist/webui.js, describe: describe.json }
+├─ describe.json       # 自描述：工具与事件（pnpm describe:extension 生成，扩展市场与 check:extension 读它）
+├─ CHANGELOG.md        # 每个版本一节，扩展市场按版本显示更新说明
 ├─ README.md
 ├─ src/
 │  ├─ index.js         # 入口：default 导出 WorldDefinition
-│  ├─ definition.js    # id/label/defaults/preflight/create
+│  ├─ definition.js    # id/label/defaults/preflight/create/describe
 │  ├─ config.js        # worlds.tts 默认值、中英文案、配置组 schema
-│  ├─ world.js         # TtsWorld：工具、控制台面板、流式推送、生命周期
+│  ├─ world.js         # TtsWorld：工具、WebUI 面板、流式推送、生命周期
 │  ├─ api.js           # 百炼 HTTP 客户端：请求体、错误归一化、下载、mime 嗅探
 │  ├─ clips.js         # 语音仓库：目录 + index.json
 │  └─ wav.js           # 时长解析、KB/时长文案、离线自检样本
-├─ dist/console.js     # 浏览器侧面板 bundle（export default { panels }）
+├─ dist/webui.js       # 浏览器侧面板 bundle（export default { panels }）
 └─ tools/
    ├─ check.mjs        # 离线检查
    ├─ drymount.mts     # 用框架自带判据跑 dry-mount

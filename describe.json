@@ -1,0 +1,41 @@
+{
+  "tools": [
+    {
+      "name": "tts_speak",
+      "description": "Synthesize speech from text. The audio is saved to disk and attached to the conversation; nothing is played or sent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "What to say."
+          },
+          "note": {
+            "type": "string",
+            "description": "Short label for the clip list."
+          },
+          "voice": {
+            "type": "string",
+            "description": "Voice for this call; must belong to the configured model."
+          },
+          "instruction": {
+            "type": "string",
+            "description": "Emotion, dialect or role hint."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "把一段文字合成为语音；音频落盘并作为附件交回对话，不播放、也不发送。",
+        "en": "Synthesize speech from text; the audio is saved to disk and returned as a conversation attachment. Nothing is played or sent."
+      }
+    }
+  ],
+  "events": []
+}

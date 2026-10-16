@@ -1,5 +1,5 @@
 /**
- * 语音工坊 World。
+ * 文本转语音 World。
  *
  * 三件事：调阿里云百炼的 Qwen-Audio-TTS 接口把文字合成语音、把音频落盘并记进索引、
  * 把它作为工具回执的 blob 交给 Core（于是进模型上下文与日志；句柄可以直接交给
@@ -25,6 +25,26 @@ const oneLine = (value, max = 160) => {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 };
 
+/** 全部工具的声明（不含 handler）；定义里的 describe 与 `tools()` 都取它。 */
+export const TTS_TOOL_DECLS = [
+  {
+    name: 'tts_speak',
+    tags: ['act'],
+    interruptible: true,
+    description: 'Synthesize speech from text. The audio is saved to disk and attached to the conversation; nothing is played or sent.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', maxLength: 2000, description: 'What to say.' },
+        note: { type: 'string', description: 'Short label for the clip list.' },
+        voice: { type: 'string', description: 'Voice for this call; must belong to the configured model.' },
+        instruction: { type: 'string', description: 'Emotion, dialect or role hint.' },
+      },
+      required: ['text'],
+    },
+  },
+];
+
 export class TtsWorld {
   #host = null;
   #streams = new Set();
@@ -44,7 +64,7 @@ export class TtsWorld {
   }
 
   // -------------------------------------------------------------------------
-  // 配置：config.json 的段被控制台热改，每次用时现读
+  // 配置：config.json 的段被 WebUI 热改，每次用时现读
   // -------------------------------------------------------------------------
 
   #raw(key) {
@@ -188,25 +208,10 @@ export class TtsWorld {
   // -------------------------------------------------------------------------
 
   tools() {
-    return [
-      {
-        name: 'tts_speak',
-        tags: ['act'],
-        interruptible: true,
-        description: 'Synthesize speech from text. The audio is saved to disk and attached to the conversation; nothing is played or sent.',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', maxLength: 2000, description: 'What to say.' },
-            note: { type: 'string', description: 'Short label for the clip list.' },
-            voice: { type: 'string', description: 'Voice for this call; must belong to the configured model.' },
-            instruction: { type: 'string', description: 'Emotion, dialect or role hint.' },
-          },
-          required: ['text'],
-        },
-        handler: async (args, ctx) => this.#speak(args ?? {}, ctx),
-      },
-    ];
+    return [{
+      ...TTS_TOOL_DECLS[0],
+      handler: async (args, ctx) => this.#speak(args ?? {}, ctx),
+    }];
   }
 
   async #speak(args, ctx) {
@@ -217,14 +222,14 @@ export class TtsWorld {
     const key = this.apiKey();
     if (protocol === 'dashscope' && !key) {
       return {
-        text: `[tts_speak 没执行] 没有配置 ${keyName}：请在控制台「语音工坊 → 状态」里填入密钥（或在部署 .env 里写 ${keyName}=...）。`,
+        text: `[tts_speak 没执行] 没有配置 ${keyName}：请在控制台「文本转语音 → 状态」里填入密钥（或在部署 .env 里写 ${keyName}=...）。`,
         failed: true,
       };
     }
     const voice = asText(args.voice) || this.#str('voice');
     if (!voice) {
       return {
-        text: '[tts_speak 没执行] 没有可选音色：请在控制台「语音工坊 → 状态」或 worlds.tts.voice 里选一个。',
+        text: '[tts_speak 没执行] 没有可选音色：请在控制台「文本转语音 → 状态」或 worlds.tts.voice 里选一个。',
         failed: true,
       };
     }
@@ -357,10 +362,10 @@ export class TtsWorld {
   }
 
   // -------------------------------------------------------------------------
-  // 控制台
+  // WebUI
   // -------------------------------------------------------------------------
 
-  console(language = 'zh') {
+  webUi(language = 'zh') {
     this.language = language === 'en' ? 'en' : 'zh';
     const t = this.#text();
     const env = this.#envState();
@@ -504,7 +509,7 @@ export class TtsWorld {
     return { ok: true, item, ...this.#counts() };
   }
 
-  /** 控制台「试听合成」：拿当前配置真合成一句，并把它存进语音列表。 */
+  /** WebUI「试听合成」：拿当前配置真合成一句，并把它存进语音列表。 */
   async #test(value) {
     const line = asText(value) || '你好，这是一段试听。';
     const protocol = this.#protocol();
@@ -550,7 +555,7 @@ export class TtsWorld {
       format: res.format,
       sampleRate,
       usage: res.usage,
-      source: 'console-test',
+      source: 'webui-test',
     });
     return { ok: true, item, ...this.#counts() };
   }
@@ -613,9 +618,9 @@ export class TtsWorld {
     try {
       this.#clipsFor().ensure();
     } catch (err) {
-      this.#host?.log?.warn?.('语音工坊：数据目录建不出来', { err: msg(err) });
+      this.#host?.log?.warn?.('文本转语音：数据目录建不出来', { err: msg(err) });
     }
-    this.#host?.log?.info?.('语音工坊已就绪', {
+    this.#host?.log?.info?.('文本转语音已就绪', {
       dir: this.dir(),
       model: this.#str('model'),
       voice: this.#str('voice'),
