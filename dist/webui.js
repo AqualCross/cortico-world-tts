@@ -276,6 +276,7 @@ function clipsPanel(ctx) {
   };
 
   const render = (data) => {
+    void ctx.refresh().catch(() => { /* Header refresh must not block panel controls. */ });
     const items = Array.isArray(data?.items) ? data.items : [];
     lastCount = typeof data?.count === 'number' ? data.count : items.length;
     stats.replaceChildren(
@@ -526,6 +527,7 @@ function statusPanel(ctx) {
   let lastClipId = '';
 
   const render = (s) => {
+    void ctx.refresh().catch(() => { /* Header refresh must not block panel controls. */ });
     currentDir = String(s?.dir ?? '');
     stats.replaceChildren(
       ctx.ui.stat({ k: tx.count, v: String(s?.count ?? 0) }),
