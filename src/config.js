@@ -8,7 +8,7 @@
 export const ID = 'tts';
 export const LABEL = '文本转语音';
 
-/** `worlds.tts` 段的默认值；键名与 configGroup 里的路径一一对应。 */
+/** `worlds.tts` 段的默认值；`enabled` 由框架的 World 开关管理，其余键与 configGroup 里的路径一一对应。 */
 export const DEFAULTS = Object.freeze({
   enabled: false,
   protocol: 'dashscope',
@@ -48,8 +48,6 @@ const ZH = {
   readyNoVoice: '未选音色',
   config: {
     title: '文本转语音',
-    enabled: '启用文本转语音',
-    enabledDesc: '开启后桌宠才拿到 tts_speak 工具。',
     protocol: '接口协议',
     protocolDesc: '接口形状。',
     baseUrl: '接口地址',
@@ -99,8 +97,6 @@ const EN = {
   readyNoVoice: 'no voice selected',
   config: {
     title: 'Text to Speech',
-    enabled: 'Enable Text to Speech',
-    enabledDesc: 'Turns on the tts_speak tool for the bot.',
     protocol: 'Protocol',
     protocolDesc: 'Request shape.',
     baseUrl: 'Endpoint',
@@ -147,7 +143,6 @@ export function configGroup(language = 'zh') {
       type: 'object',
       title: t.title,
       properties: {
-        [`${K}.enabled`]: { type: 'boolean', title: t.enabled, description: t.enabledDesc, 'x-hot': true },
         [`${K}.protocol`]: {
           type: 'string',
           title: t.protocol,

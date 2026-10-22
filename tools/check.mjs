@@ -145,7 +145,7 @@ try {
     for (const tool of makeWorld().tools()) assert(names.has(tool.name), `工具 ${tool.name} 不在 describe.tools 里`);
   });
 
-  check('配置组与默认值一一对应，且都在 worlds.tts 段内', () => {
+  check('配置组覆盖 DEFAULTS 的其余键（enabled 由框架开关管理），且都在 worlds.tts 段内', () => {
     const group = config.configGroup('zh');
     const paths = Object.keys(group.schema.properties);
     for (const path of paths) {
@@ -154,6 +154,10 @@ try {
       assert(Object.hasOwn(config.DEFAULTS, short), `配置 ${short} 没有默认值`);
     }
     for (const short of Object.keys(config.DEFAULTS)) {
+      if (short === 'enabled') {
+        assert(!paths.includes('worlds.tts.enabled'), 'World 启用开关由框架渲染，不该进配置 schema');
+        continue;
+      }
       assert(paths.includes(`worlds.tts.${short}`), `默认值 ${short} 没有进 schema`);
     }
   });
