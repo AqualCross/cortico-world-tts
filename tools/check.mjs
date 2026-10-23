@@ -88,6 +88,7 @@ const config = await import(pathToFileURL(join(pkgDir, 'src', 'config.js')).href
 function makeWorld(overrides = {}, opts = {}) {
   const cfg = { ...def.defaults(), enabled: true, ...overrides };
   const stored = [];
+  const persisted = [];
   const world = def.create({
     cfg,
     dataDir: opts.dataDir ?? join(scratch, 'data'),
@@ -95,9 +96,51 @@ function makeWorld(overrides = {}, opts = {}) {
     packageDir: pkgDir,
     secret: () => (opts.key === undefined ? 'sk-test' : opts.key),
     storeSecret: (name, value) => stored.push([name, value]),
+    persist: (patch) => persisted.push(structuredClone(patch)),
   });
   world.__stored = stored;
+  world.__persisted = persisted;
   return world;
+}
+
+/** 事件库与推送的假宿主；pushEvent 像 Core 一样给事件补游标。 */
+function fakeHost(initial = [], blobs = {}) {
+  const all = [...initial];
+  const pushed = [];
+  const host = {
+    store: {
+      latestCursor: () => (all.length ? all[all.length - 1].cursor : 0),
+      range: ({ fromCursor = 0, limit = 50 } = {}) => all.filter((one) => one.cursor >= fromCursor).slice(0, limit),
+    },
+    pushEvent: async (event, opts) => {
+      const full = { ...event, cursor: (all.length ? all[all.length - 1].cursor : 0) + 1 };
+      all.push(full);
+      pushed.push({ event: full, opts });
+      return full;
+    },
+    blob: (handle) => blobs[handle] ?? null,
+    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child() { return this; } },
+  };
+  return {
+    host,
+    all,
+    pushed,
+    add(event) {
+      const full = { ...event, cursor: (all.length ? all[all.length - 1].cursor : 0) + 1 };
+      all.push(full);
+      return full;
+    },
+  };
+}
+
+/** Waits until `check` holds, or fails the check. */
+async function until(check, timeoutMs = 2500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((done) => setTimeout(done, 15));
+  }
+  throw new Error('condition never held');
 }
 
 try {
@@ -135,12 +178,13 @@ try {
   });
 
   check('describe 与 describe.json 一致，实例工具都在声明里', () => {
-    assert(def.describe && Array.isArray(def.describe.tools) && def.describe.tools.length === 1, '定义缺 describe.tools');
+    assert(def.describe && Array.isArray(def.describe.tools) && def.describe.tools.length === 2, '定义缺 describe.tools');
     assert(Array.isArray(def.describe.events), '定义缺 describe.events');
     const file = JSON.parse(readFileSync(join(pkgDir, 'describe.json'), 'utf8'));
     eq(stable(file), stable(JSON.parse(JSON.stringify(def.describe))), 'describe.json 与代码里的 describe 不一致');
     eq(file.tools[0].name, 'tts_speak', 'describe 工具名');
-    eq(file.events.length, 0, '这个 World 不该声明事件');
+    eq(file.events.length, 2, '两个声音事件');
+    eq(file.events[0].type, 'tts.voice', '事件名');
     const names = new Set(file.tools.map((t) => t.name));
     for (const tool of makeWorld().tools()) assert(names.has(tool.name), `工具 ${tool.name} 不在 describe.tools 里`);
   });
@@ -172,10 +216,10 @@ try {
   // -------------------------------------------------------------------------
   console.log('World 与工具');
 
-  check('工具只有一个 tts_speak，声明齐全', () => {
+  check('tts_speak 与 tts_control，声明齐全', () => {
     const world = makeWorld();
     const tools = world.tools();
-    eq(tools.length, 1, '工具数量');
+    eq(tools.length, 2, '工具数量');
     const tool = tools[0];
     eq(tool.name, 'tts_speak', '工具名');
     assert(Array.isArray(tool.tags) && tool.tags.includes('act'), 'tags');
@@ -183,6 +227,12 @@ try {
     eq(tool.parameters.required?.[0], 'text', 'required[0]');
     assert(tool.parameters.properties?.voice, '缺 voice 参数');
     assert(tool.parameters.properties?.instruction, '缺 instruction 参数');
+    assert(tool.parameters.properties?.delivery, '缺 delivery 参数');
+    const control = tools[1];
+    eq(control.name, 'tts_control', '控制工具名');
+    eq(control.parameters.required?.[0], 'action', 'control required[0]');
+    assert(control.parameters.properties?.eventDelivery, '缺 eventDelivery 参数');
+    assert(control.parameters.properties?.autoSpeak, '缺 autoSpeak 参数');
   });
 
   check('面板与配置组声明', () => {
@@ -470,6 +520,120 @@ try {
       assert(empty.failed && empty.text.includes('text 是空的'), `空文本的回执不对：${empty.text}`);
     } finally {
       restoreFetch();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  console.log('事件交付与自动朗读');
+
+  await checkAsync('气泡朗读文本去掉表情、链接与标记', async () => {
+    const clean = await import(pathToFileURL(join(pkgDir, 'src', 'speakable.js')).href);
+    eq(clean.speakable('你好 😊 https://example.test **再见**'), '你好 再见');
+    eq(clean.speakable('🎉🎉'), '');
+  });
+
+  await checkAsync('tts_control 读状态、改配置并持久化', async () => {
+    const world = makeWorld();
+    const control = world.tools()[1];
+    const status = await control.handler({ action: 'status' }, {});
+    assert(status.text.includes('wait') && status.text.includes('archive'), status.text);
+    const set = await control.handler({ action: 'set', delivery: 'event', eventDelivery: 'model', autoSpeak: true }, {});
+    assert(!set.failed, set.text);
+    eq(world.cfg.delivery, 'event', 'delivery');
+    eq(world.cfg.eventDelivery, 'model', 'eventDelivery');
+    eq(world.cfg.autoSpeak, true, 'autoSpeak');
+    eq(JSON.stringify(world.__persisted), JSON.stringify([{ delivery: 'event', eventDelivery: 'model', autoSpeak: true }]), '持久化 patch');
+    const bad = await control.handler({ action: 'set', delivery: 'nope' }, {});
+    assert(bad.failed, '非法值应当失败');
+  });
+
+  await checkAsync('event 交付：先回执，完成后发事件；archive/model 按配置', async () => {
+    const body = wav.sampleWav(0.25);
+    installFetch((u) => {
+      if (u.includes('SpeechSynthesizer')) {
+        return jsonRes({ request_id: 'r', output: { audio: { url: 'http://oss.test/a.wav' } }, usage: {} });
+      }
+      if (u === 'http://oss.test/a.wav') return new Response(body, { status: 200, headers: { 'content-type': 'audio/wav' } });
+      throw new Error(`没料到的请求：${u}`);
+    });
+    const first = makeWorld({ delivery: 'event' }, { dataDir: join(scratch, 'async-1') });
+    const fake1 = fakeHost();
+    try {
+      await first.start(fake1.host);
+      const out = await first.tools()[0].handler({ text: '异步说一句' }, {});
+      assert(!out.failed && out.text.includes('已提交'), out.text);
+      assert(!out.blobs, '回执不该带 blob');
+      const id = /#([a-z0-9]+)/.exec(out.text)?.[1] ?? '';
+      assert(id, `回执缺请求号：${out.text}`);
+      await until(() => fake1.pushed.length >= 1);
+      const one = fake1.pushed[0];
+      eq(one.event.type, 'tts.voice', '事件类型');
+      eq(one.event.meta.origin, 'tool', 'origin');
+      eq(one.event.meta.requestId, id, '事件请求号');
+      assert(one.event.text.includes(`#${id}`), '事件正文缺请求号');
+      eq(one.opts.deliver, false, '默认只落库');
+      assert(one.event.blobs?.[0]?.bytes?.length === body.length, '事件缺音频附件');
+      assert(one.event.meta.path, '事件缺落盘路径');
+    } finally {
+      await first.stop();
+    }
+
+    const second = makeWorld({ delivery: 'event', eventDelivery: 'model' }, { dataDir: join(scratch, 'async-2') });
+    const fake2 = fakeHost();
+    try {
+      await second.start(fake2.host);
+      const out = await second.tools()[0].handler({ text: '投递到对话' }, {});
+      assert(!out.failed, out.text);
+      await until(() => fake2.pushed.length >= 1);
+      eq(fake2.pushed[0].opts.deliver, true, 'model 应当投递');
+    } finally {
+      restoreFetch();
+      await second.stop();
+    }
+  });
+
+  await checkAsync('自动朗读只处理启动后的新气泡，事件带音频附件', async () => {
+    const body = wav.sampleWav(0.2);
+    installFetch((u) => {
+      if (u.includes('SpeechSynthesizer')) {
+        return jsonRes({ request_id: 'r', output: { audio: { url: 'http://oss.test/b.wav' } }, usage: {} });
+      }
+      if (u === 'http://oss.test/b.wav') return new Response(body, { status: 200, headers: { 'content-type': 'audio/wav' } });
+      throw new Error(`没料到的请求：${u}`);
+    });
+    const fake = fakeHost([{
+      cursor: 1,
+      type: 'desktop-pet.self',
+      source: 'desktop-pet',
+      text: '',
+      meta: { kind: 'say', beats: [{ text: '启动前的旧气泡' }] },
+    }]);
+    const world = new mod.TtsWorld({
+      cfg: { ...def.defaults(), enabled: true, autoSpeak: true },
+      dataDir: join(scratch, 'auto-data'),
+      botDir: join(scratch, 'bot'),
+      secret: () => 'sk-test',
+      scanMs: 15,
+    });
+    try {
+      await world.start(fake.host);
+      fake.add({
+        type: 'desktop-pet.self',
+        source: 'desktop-pet',
+        text: '',
+        meta: { kind: 'say', beats: [{ text: '你好呀' }] },
+      });
+      await until(() => fake.pushed.some((one) => one.event.meta?.origin === 'pet'));
+      const one = fake.pushed.find((item) => item.event.meta?.origin === 'pet');
+      assert(one.event.text.includes('你好呀'), one.event.text);
+      assert(one.event.text.includes('不必回应'), '桌宠气泡的事件应当说明不必回应');
+      eq(one.event.meta.requestId, '', '自动朗读没有请求号');
+      assert(!fake.pushed.some((item) => item.event.text.includes('旧气泡')), '不该补读启动前的气泡');
+      assert(one.event.blobs?.[0]?.bytes?.length === body.length, '缺音频附件');
+      eq(one.opts.deliver, false, '默认只落库');
+    } finally {
+      restoreFetch();
+      await world.stop();
     }
   });
 

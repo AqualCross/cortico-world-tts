@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "tts_speak",
-      "description": "Synthesize speech from text. The audio is saved to disk and attached to the conversation; nothing is played or sent.",
+      "description": "Synthesize speech from text. By default the call waits and returns the audio, which is saved to disk and attached to the conversation; with delivery=event it returns at once and the audio arrives later as an event. Nothing is played or sent.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -22,6 +22,14 @@
           "instruction": {
             "type": "string",
             "description": "Emotion, dialect or role hint."
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "wait",
+              "event"
+            ],
+            "description": "wait = return the audio in this call; event = return immediately and deliver the audio as an event. Defaults to the configured delivery mode."
           }
         },
         "required": [
@@ -32,10 +40,74 @@
         "act"
       ],
       "summary": {
-        "zh": "把一段文字合成为语音；音频落盘并作为附件交回对话，不播放、也不发送。",
-        "en": "Synthesize speech from text; the audio is saved to disk and returned as a conversation attachment. Nothing is played or sent."
+        "zh": "把一段文字合成为语音；音频落盘并作为附件交回对话，也可以先回执、完成后发声音事件。不播放、也不发送。",
+        "en": "Synthesize speech from text; the audio is saved to disk and returned as a conversation attachment, or delivered later as an event. Nothing is played or sent."
+      }
+    },
+    {
+      "name": "tts_control",
+      "description": "Read or change how speech is delivered. action=status shows the current modes; action=set changes delivery (wait/event), eventDelivery (archive/model) and autoSpeak, and saves them to the config. archive keeps voice events in the event store without waking you; model delivers them to the conversation. autoSpeak synthesizes the pet's own bubble lines into voice events.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "set"
+            ],
+            "description": "status = show the current settings; set = change the given ones."
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "wait",
+              "event"
+            ],
+            "description": "For set: wait = tts_speak blocks for the audio; event = it returns at once and the audio arrives as an event."
+          },
+          "eventDelivery": {
+            "type": "string",
+            "enum": [
+              "archive",
+              "model"
+            ],
+            "description": "For set: archive = voice events are stored only; model = they are delivered to the conversation and wake you."
+          },
+          "autoSpeak": {
+            "type": "boolean",
+            "description": "For set: synthesize the pet's own bubble lines into voice events."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "查看或修改语音的交付方式、声音事件去向和自动朗读开关。",
+        "en": "Read or change how speech is delivered: wait/event, the voice event destination, and auto-speak."
       }
     }
   ],
-  "events": []
+  "events": [
+    {
+      "type": "tts.voice",
+      "description": {
+        "zh": "语音合成完成：正文带参数摘要，附件是一段语音；异步交付与自动朗读都发这条。",
+        "en": "A finished synthesis: the text carries the parameters and the attachment is the audio; both async delivery and auto-speak emit it."
+      },
+      "trigger": "debounce"
+    },
+    {
+      "type": "tts.voice-failed",
+      "description": {
+        "zh": "语音合成失败：正文是原因，没有附件。",
+        "en": "A failed synthesis: the text is the reason, with no attachment."
+      },
+      "trigger": "debounce"
+    }
+  ]
 }

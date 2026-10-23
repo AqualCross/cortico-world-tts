@@ -1,29 +1,42 @@
 # 文本转语音 · cortico-world-tts
 
-给 Coopanion 桌宠加一件事：**把文字合成为语音**。支持两种接口形状（SpeechSynthesizer 与 OpenAI 兼容的 `/v1/audio/speech`，后者可以接本地模型），音频落盘、作为附件进入对话，回执里带绝对路径和附件句柄。
+给 Coopanion 桌宠加一件事：**把文字合成为语音**。支持两种接口形状（SpeechSynthesizer 与 OpenAI 兼容的 `/v1/audio/speech`，后者可以接本地模型），音频落盘、作为附件进入对话，回执里带绝对路径和附件句柄。也可以先回执、完成后以声音事件交付；开启自动朗读后，桌宠气泡里的发言也会被合成成声音事件。
 
 这是一个 `cortico` 的 **World 扩展**（`kind: world`，`api: 6`），只补一个 `tts` 世界，
 不依赖任何第三方 npm 包（纯 ESM JS + Node 内置模块）。
 
 > **它不播放声音，也不自己发送。** 出声与发送是别的工具的事；这份扩展只负责把语音*合成出来*，
-> 剩下的（QQ 语音条、本地播放、以后桌宠自己的嘴）谁有工具谁做。
+> 剩下的（QQ 语音条、本地播放、桌宠自己的嘴）谁有工具谁做。桌面播放可以配
+> `cortico-world-audio-play` 的自动监听，把声音事件直接放出来。
 >
 > MIT 许可，见 [LICENSE](LICENSE)。非官方扩展：与 Coopanion / cortico 的作者无关。
 
 ## 它做了什么
 
-装好并启用之后，桌宠会多出一个工具：
+装好并启用之后，桌宠会多出两个工具：
 
 | 工具 | 标签 | 作用 |
 | --- | --- | --- |
-| `tts_speak` | `act` | 把一段文字合成为语音文件（可临时指定音色与 `instruction`），落盘、记进列表，并把音频作为附件交回对话 |
+| `tts_speak` | `act` | 把一段文字合成为语音文件（可临时指定音色、`instruction` 与交付方式），落盘、记进列表；同步回执带音频附件，异步则发声音事件 |
+| `tts_control` | `act` | 读或改交付方式、声音事件去向、自动朗读开关 |
 
-音频有三条去向：
+音频有几条去向：
 
 1. **进对话**：工具回执带 `blobs`，Core 会把它存成句柄，并在模型可见的回执里留一行 `[blob log:… .wav audio/wav]`。
 2. **发给别人**：把那个句柄交给渠道工具。例如官方 QQ 世界的 `qq_draft`：
    `{"voice": "log:xxxx.wav"}` 就能发一条语音条（语音条是独立一条消息，`text`、`image`、`reply_to` 都留空）。
 3. **自己听**：控制台「文本转语音 → 作品」页点「试听」；或者把回执里的绝对路径交给本地播放工具。
+4. **自动播放**：异步与自动朗读发的是声音事件，监听这类事件的播放扩展（如 `cortico-world-audio-play`）可以自动播放，不需要模型再调一次工具。
+
+## 异步交付与自动朗读
+
+- `delivery: wait`（默认）：`tts_speak` 等到音频合成好，把音频作为附件放进回执。
+- `delivery: event`：`tts_speak` 立刻回执「已提交」，合成完成后发 `tts.voice` 事件（带音频附件与落盘路径）；失败发 `tts.voice-failed`。回执与事件带同一个请求号（形如 `#p...`），同时挂多条时按它对号。
+- `eventDelivery` 决定声音事件去哪：`archive` 只落事件库，不唤醒桌宠，播放扩展仍能读到；`model` 投递到对话事件流。默认 `archive`。
+- `autoSpeak: true` 后，桌宠在气泡里说的话（`desktop-pet.self` 的 say / ask）会自动合成成 `tts.voice`，同样受 `eventDelivery` 控制；只处理打开之后的新气泡，重启不补读。say 读 beats 拼起来的正文，ask 只读问题，不读选项。事件正文会注明「这是你自己气泡的朗读结果，通常不必回应」。
+- 桌宠可以用 `tts_control` 改这三个开关；`tts_speak` 也能用 `delivery` 参数覆盖单次交付。
+
+声音事件本身不播放。把 `cortico-world-audio-play` 的 `autoPlay` 打开后，它会监听 `tts.voice` 并自动播放。
 
 ## 安装
 
@@ -84,6 +97,7 @@ pnpm add "D:\path\to\cortico-world-tts" --ignore-workspace
 | --- | --- | --- |
 | `enabled` | `false` | 是否把 `tts_speak` 挂给桌宠 |
 | `protocol` | `dashscope` | `dashscope` = 百炼 Qwen-Audio-TTS；`openai` = OpenAI 兼容的 `/v1/audio/speech`（本地 IndexTTS 这类，不需要 key） |
+| `delivery` | `wait` | `wait` = 工具调用里等音频；`event` = 立刻回执，完成后发 `tts.voice` 事件 |
 | `baseUrl` | `https://maas.qianwenaiapi.com` | 千问AI平台的接口根地址；接口路径是 `/api/v1/services/audio/tts/SpeechSynthesizer` |
 | `apiKeySecret` | `AUDIO_API_KEY` | 密钥的**变量名**：先看部署 `.env`，再退到 `<bot 目录>/../providers/<端点>/.env` |
 | `model` | `qwen-audio-3.1-tts-flash` | 模型名 |
@@ -97,6 +111,8 @@ pnpm add "D:\path\to\cortico-world-tts" --ignore-workspace
 | `saveDir` | 空 | 留空 = 本插件数据目录下的 `tts/` |
 | `keep` | `200` | 超出后自动删最旧的，`0` = 不清理 |
 | `pushToConsole` | `true` | 合成完实时推给「作品」页 |
+| `eventDelivery` | `archive` | 声音事件去向：`archive` 只落事件库；`model` 投递到对话事件流 |
+| `autoSpeak` | `false` | 自动把桌宠气泡（say / ask）合成为声音事件；只处理启用之后的新气泡 |
 
 ### 密钥
 

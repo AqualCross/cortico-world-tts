@@ -2,6 +2,15 @@
 
 每个版本一节 `## <版本号>`；扩展市场按节显示更新说明。
 
+## 0.1.4
+
+- 新增异步交付：`worlds.tts.delivery = event`（或 `tts_speak` 的 `delivery` 参数）时，工具立刻回执，合成完成后发 `tts.voice` 事件；失败发 `tts.voice-failed`。
+- 新增 `worlds.tts.eventDelivery`：`archive` 只落事件库，`model` 投递到模型事件流；异步交付与自动朗读共用这一个去向。
+- 新增 `worlds.tts.autoSpeak`：自动把桌宠气泡（say / ask）合成为语音事件；只处理启用之后的新气泡，重启不补。
+- 新增 `tts_control` 工具：桌宠可以读、改 `delivery`、`eventDelivery` 与 `autoSpeak`。
+- 声音事件带音频附件与落盘路径，供监听事件的播放扩展（如 `cortico-world-audio-play`）取用。
+- 异步回执与事件带同一个请求号；桌宠气泡的语音事件正文注明这是自己的朗读结果、通常不必回应。
+
 ## 0.1.3
 
 - 移除配置页里与框架 World 开关重复的「启用」项；World 的启用与停用统一在 World 页。

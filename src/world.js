@@ -2,8 +2,10 @@
  * 文本转语音 World。
  *
  * 三件事：调阿里云百炼的 Qwen-Audio-TTS 接口把文字合成语音、把音频落盘并记进索引、
- * 把它作为工具回执的 blob 交给 Core（于是进模型上下文与日志；句柄可以直接交给
- * 别的渠道工具用）。
+ * 把音频交给 Core（工具回执的 blob，或事件里的音频附件）。
+ *
+ * 合成可以同步交付（工具调用里等），也可以先回执、完成后发声音事件；还能自动把桌宠
+ * 气泡里的发言合成为声音事件。事件去向由配置决定：只落事件库，或投递到模型事件流。
  *
  * 这里**不播放**任何声音，也不替用户发送：出声与发送都是另外的事，谁有工具谁做。
  * 只依赖框架契约与 Node 内置模块，服务端不需要编译。
@@ -15,7 +17,18 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 import { TtsApiError, synthesizeOpenAiSpeech, synthesizeSpeech } from './api.js';
 import { Clips } from './clips.js';
-import { DEFAULTS, ID, configGroup, text } from './config.js';
+import {
+  DEFAULTS,
+  DELIVERIES,
+  EVENT_DELIVERIES,
+  EVENT_FAILED_TYPE,
+  EVENT_TYPE,
+  ID,
+  PET_EVENT,
+  configGroup,
+  text,
+} from './config.js';
+import { speakable } from './speakable.js';
 import { formatKb, formatSeconds, sampleWav, wavDuration } from './wav.js';
 
 const msg = (err) => (err instanceof Error ? err.message : String(err));
@@ -25,13 +38,16 @@ const oneLine = (value, max = 160) => {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 };
 
+/** 自动朗读的两次失败尝试之间至少隔这么久，免得接口挂了还逐条气泡重试。 */
+const AUTO_FAIL_COOLDOWN_MS = 10000;
+
 /** 全部工具的声明（不含 handler）；定义里的 describe 与 `tools()` 都取它。 */
 export const TTS_TOOL_DECLS = [
   {
     name: 'tts_speak',
     tags: ['act'],
     interruptible: true,
-    description: 'Synthesize speech from text. The audio is saved to disk and attached to the conversation; nothing is played or sent.',
+    description: 'Synthesize speech from text. By default the call waits and returns the audio, which is saved to disk and attached to the conversation; with delivery=event it returns at once and the audio arrives later as an event. Nothing is played or sent.',
     parameters: {
       type: 'object',
       properties: {
@@ -39,8 +55,24 @@ export const TTS_TOOL_DECLS = [
         note: { type: 'string', description: 'Short label for the clip list.' },
         voice: { type: 'string', description: 'Voice for this call; must belong to the configured model.' },
         instruction: { type: 'string', description: 'Emotion, dialect or role hint.' },
+        delivery: { type: 'string', enum: ['wait', 'event'], description: 'wait = return the audio in this call; event = return immediately and deliver the audio as an event. Defaults to the configured delivery mode.' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'tts_control',
+    tags: ['act'],
+    description: 'Read or change how speech is delivered. action=status shows the current modes; action=set changes delivery (wait/event), eventDelivery (archive/model) and autoSpeak, and saves them to the config. archive keeps voice events in the event store without waking you; model delivers them to the conversation. autoSpeak synthesizes the pet\'s own bubble lines into voice events.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['status', 'set'], description: 'status = show the current settings; set = change the given ones.' },
+        delivery: { type: 'string', enum: ['wait', 'event'], description: 'For set: wait = tts_speak blocks for the audio; event = it returns at once and the audio arrives as an event.' },
+        eventDelivery: { type: 'string', enum: ['archive', 'model'], description: 'For set: archive = voice events are stored only; model = they are delivered to the conversation and wake you.' },
+        autoSpeak: { type: 'boolean', description: 'For set: synthesize the pet\'s own bubble lines into voice events.' },
+      },
+      required: ['action'],
     },
   },
 ];
@@ -52,6 +84,15 @@ export class TtsWorld {
   #busy = 0;
   #lastError = '';
   #lastItemAt = '';
+  #persist = null;
+  #scanMs;
+  #timer = null;
+  #voiceCursor = 0;
+  #jobs = Promise.resolve();
+  #jobEpoch = 0;
+  #abort = null;
+  #autoFailedAt = 0;
+  #seq = 0;
 
   constructor(opts = {}) {
     this.id = ID;
@@ -60,6 +101,8 @@ export class TtsWorld {
     this.botDir = opts.botDir ?? process.cwd();
     this.secret = typeof opts.secret === 'function' ? opts.secret : () => '';
     this.storeSecret = typeof opts.storeSecret === 'function' ? opts.storeSecret : () => {};
+    this.#persist = typeof opts.persist === 'function' ? opts.persist : null;
+    this.#scanMs = Number.isFinite(Number(opts.scanMs)) && Number(opts.scanMs) >= 10 ? Number(opts.scanMs) : 1500;
     this.language = 'zh';
   }
 
@@ -104,6 +147,18 @@ export class TtsWorld {
   /** `worlds.tts.protocol`：dashscope = 百炼 SpeechSynthesizer 形状；openai = /v1/audio/speech。 */
   #protocol() {
     return this.#str('protocol') === 'openai' ? 'openai' : 'dashscope';
+  }
+
+  /** 一次调用的交付方式：工具参数优先，其次配置。 */
+  #deliveryOf(args) {
+    const asked = asText(args?.delivery);
+    if (DELIVERIES.includes(asked)) return asked;
+    return this.#str('delivery') === 'event' ? 'event' : 'wait';
+  }
+
+  /** `worlds.tts.eventDelivery`：archive = 只落事件库；model = 投递到模型事件流。 */
+  #eventDelivery() {
+    return this.#str('eventDelivery') === 'model' ? 'model' : 'archive';
   }
 
   /** `worlds.tts.seed`：0–65535；留空（null）= 不发，用接口默认。 */
@@ -208,88 +263,102 @@ export class TtsWorld {
   // -------------------------------------------------------------------------
 
   tools() {
-    return [{
-      ...TTS_TOOL_DECLS[0],
-      handler: async (args, ctx) => this.#speak(args ?? {}, ctx),
-    }];
+    return [
+      { ...TTS_TOOL_DECLS[0], handler: async (args, ctx) => this.#speak(args ?? {}, ctx) },
+      { ...TTS_TOOL_DECLS[1], handler: async (args) => this.#control(args ?? {}) },
+    ];
   }
 
-  async #speak(args, ctx) {
-    const rawText = asText(args.text);
-    if (!rawText) return { text: '[tts_speak 没执行] text 是空的。不想合成语音就别调用。', failed: true };
+  /** 一次请求的参数；不合法时直接带着现成的失败回执返回。 */
+  #prepare(args) {
+    const text = asText(args?.text);
+    if (!text) return { outcome: { text: '[tts_speak 没执行] text 是空的。不想合成语音就别调用。', failed: true } };
     const protocol = this.#protocol();
     const keyName = this.#str('apiKeySecret');
     const key = this.apiKey();
     if (protocol === 'dashscope' && !key) {
       return {
-        text: `[tts_speak 没执行] 没有配置 ${keyName}：请在控制台「文本转语音 → 状态」里填入密钥（或在部署 .env 里写 ${keyName}=...）。`,
-        failed: true,
+        outcome: {
+          text: `[tts_speak 没执行] 没有配置 ${keyName}：请在控制台「文本转语音 → 状态」里填入密钥（或在部署 .env 里写 ${keyName}=...）。`,
+          failed: true,
+        },
       };
     }
-    const voice = asText(args.voice) || this.#str('voice');
+    const voice = asText(args?.voice) || this.#str('voice');
     if (!voice) {
       return {
-        text: '[tts_speak 没执行] 没有可选音色：请在控制台「文本转语音 → 状态」或 worlds.tts.voice 里选一个。',
-        failed: true,
+        outcome: {
+          text: '[tts_speak 没执行] 没有可选音色：请在控制台「文本转语音 → 状态」或 worlds.tts.voice 里选一个。',
+          failed: true,
+        },
       };
     }
-    const model = this.#str('model');
-    const instruction = asText(args.instruction) || this.#str('instruction');
-    const note = asText(args.note);
-    const sampleRate = this.#num('sampleRate', 8000, 48000);
+    return {
+      text,
+      protocol,
+      key,
+      voice,
+      model: this.#str('model'),
+      instruction: asText(args?.instruction) || this.#str('instruction'),
+      note: asText(args?.note),
+      sampleRate: this.#num('sampleRate', 8000, 48000),
+    };
+  }
+
+  #request(prep, signal) {
+    const common = {
+      baseUrl: this.#str('baseUrl'),
+      apiKey: prep.key,
+      model: prep.model,
+      text: prep.text,
+      voice: prep.voice,
+      languageHints: this.#languageHints(),
+      format: this.#str('format'),
+      sampleRate: prep.sampleRate,
+      timeoutMs: this.#num('timeoutMs', 10000, 900000),
+      signal,
+    };
+    return prep.protocol === 'openai'
+      ? synthesizeOpenAiSpeech(common)
+      : synthesizeSpeech({ ...common, instruction: prep.instruction, seed: this.#seed() });
+  }
+
+  #store(prep, res) {
+    const seconds = wavDuration(res.bytes);
+    const { item, warning } = this.#saveSafe({
+      bytes: res.bytes,
+      mime: res.mime,
+      seconds,
+      text: prep.text,
+      note: prep.note,
+      voice: prep.voice,
+      model: prep.model,
+      instruction: prep.instruction,
+      format: res.format,
+      sampleRate: prep.sampleRate,
+      usage: res.usage,
+      source: 'api',
+    });
+    return { seconds, item, warning };
+  }
+
+  async #speak(args, ctx) {
+    const prep = this.#prepare(args);
+    if (prep.outcome) return prep.outcome;
+    if (this.#deliveryOf(args) === 'event') return this.#submit(prep);
     this.#busy += 1;
     try {
-      const res = protocol === 'openai'
-        ? await synthesizeOpenAiSpeech({
-            baseUrl: this.#str('baseUrl'),
-            apiKey: key,
-            model,
-            text: rawText,
-            voice,
-            languageHints: this.#languageHints(),
-            format: this.#str('format'),
-            sampleRate,
-            timeoutMs: this.#num('timeoutMs', 10000, 900000),
-            signal: ctx?.signal,
-          })
-        : await synthesizeSpeech({
-            baseUrl: this.#str('baseUrl'),
-            apiKey: key,
-            model,
-            text: rawText,
-            voice,
-            instruction,
-            languageHints: this.#languageHints(),
-            seed: this.#seed(),
-            format: this.#str('format'),
-            sampleRate,
-            timeoutMs: this.#num('timeoutMs', 10000, 900000),
-            signal: ctx?.signal,
-          });
-      const seconds = wavDuration(res.bytes);
-      const { item, warning } = this.#saveSafe({
-        bytes: res.bytes,
-        mime: res.mime,
-        seconds,
-        text: rawText,
-        note,
-        voice,
-        model,
-        instruction,
-        format: res.format,
-        sampleRate,
-        usage: res.usage,
-        source: 'api',
-      });
+      const res = await this.#request(prep, ctx?.signal);
+      const { seconds, item, warning } = this.#store(prep, res);
       return this.#outcome({
         verb: '合成好了。',
         bytes: res.bytes,
         mime: res.mime,
         seconds,
-        text: rawText,
-        note,
-        voice,
-        model,
+        text: prep.text,
+        note: prep.note,
+        voice: prep.voice,
+        model: prep.model,
         format: res.format,
         item,
         warning,
@@ -299,6 +368,219 @@ export class TtsWorld {
     } finally {
       this.#busy -= 1;
     }
+  }
+
+  /** 事件交付：先回执，合成与发事件排进后台队列。 */
+  #submit(prep) {
+    if (!this.#host) {
+      return { text: '[tts_speak 没执行] 事件模式需要 World 正在运行；等它启动后再试。', failed: true };
+    }
+    prep.requestId = `p${Date.now().toString(36)}${++this.#seq}`;
+    const epoch = this.#jobEpoch;
+    this.#busy += 1;
+    this.#enqueueJob(async () => {
+      if (epoch !== this.#jobEpoch) {
+        this.#busy -= 1;
+        return;
+      }
+      try {
+        const res = await this.#request(prep, this.#abort?.signal);
+        const { seconds, item } = this.#store(prep, res);
+        await this.#pushVoice({ prep, res, seconds, item, origin: 'tool' });
+      } catch (err) {
+        if (epoch === this.#jobEpoch) await this.#pushFailed(prep, err, 'tool');
+      } finally {
+        this.#busy -= 1;
+      }
+    });
+    const route = this.#eventDelivery() === 'model' ? '投递到对话事件流' : '只落事件库';
+    return { text: `已提交语音合成 #${prep.requestId}；完成后作为声音事件送达（${route}）。` };
+  }
+
+  /** 同一时间只跑一个合成任务：事件按提交顺序出来，也避免并发打接口。 */
+  #enqueueJob(task) {
+    const run = () => task();
+    const result = this.#jobs.then(run, run);
+    this.#jobs = result.then(() => {}, () => {});
+    return result;
+  }
+
+  async #pushVoice({ prep, res, seconds, item, origin }) {
+    if (origin === 'pet' && !this.#bool('autoSpeak')) return;
+    const host = this.#host;
+    if (!host?.pushEvent) return;
+    const name = item?.file ?? `voice-${Date.now().toString(36)}.wav`;
+    const stamp = prep.requestId ? ` #${prep.requestId}` : '';
+    const label = origin === 'pet' ? '（这是你自己气泡的朗读结果，通常不必回应）' : '';
+    const bits = [
+      prep.voice,
+      prep.model,
+      res.format,
+      seconds ? formatSeconds(seconds) : '',
+      formatKb(res.bytes.length),
+    ].filter(Boolean);
+    try {
+      await host.pushEvent({
+        type: EVENT_TYPE,
+        source: this.id,
+        senderKey: item?.id,
+        ts: new Date().toISOString(),
+        text: `语音合成完成${stamp}${label}：${oneLine(prep.text, 200)}\n参数：${bits.join(' · ')}`,
+        meta: {
+          origin,
+          requestId: prep.requestId ?? '',
+          text: prep.text,
+          voice: prep.voice,
+          model: prep.model,
+          format: res.format ?? '',
+          seconds,
+          mime: res.mime,
+          path: item?.path ?? '',
+          itemId: item?.id ?? '',
+          note: prep.note,
+        },
+        blobs: [{
+          bytes: res.bytes,
+          mime: res.mime,
+          name,
+          fallbackText: `[语音 ${name}${seconds ? ` ${formatSeconds(seconds)}` : ''}｜${prep.voice}｜${formatKb(res.bytes.length)}]`,
+        }],
+      }, { deliver: this.#eventDelivery() === 'model', trigger: 'debounce' });
+    } catch (err) {
+      this.#lastError = `${new Date().toISOString()} 声音事件没送出去：${msg(err)}`;
+      host.log?.warn?.('文本转语音：声音事件没送出去', { err: msg(err) });
+    }
+  }
+
+  async #pushFailed(prep, err, origin) {
+    const detail = err instanceof TtsApiError ? err.message : msg(err);
+    this.#lastError = `${new Date().toISOString()} ${detail}`;
+    this.#emit({ t: 'error', message: detail, tool: origin === 'pet' ? 'auto-speak' : 'tts_speak' }, true);
+    const host = this.#host;
+    if (!host?.pushEvent) return;
+    const stamp = prep.requestId ? ` #${prep.requestId}` : '';
+    const label = origin === 'pet' ? '（桌宠气泡的朗读结果）' : '';
+    try {
+      await host.pushEvent({
+        type: EVENT_FAILED_TYPE,
+        source: this.id,
+        ts: new Date().toISOString(),
+        text: `语音合成失败${stamp}${label}：${detail}`,
+        meta: { origin, requestId: prep.requestId ?? '', text: prep.text, voice: prep.voice, model: prep.model },
+      }, { deliver: this.#eventDelivery() === 'model', trigger: 'debounce' });
+    } catch (pushErr) {
+      host.log?.warn?.('文本转语音：失败事件没送出去', { err: msg(pushErr) });
+    }
+  }
+
+  /** 桌宠读的配置回执：三个开关与在途任务。 */
+  #controlSays() {
+    const auto = this.#bool('autoSpeak') ? 'on' : 'off';
+    return `交付：${this.#deliveryOf({})} · 声音事件：${this.#eventDelivery()} · 自动朗读：${auto}${this.#busy ? ` · 在途 ${this.#busy}` : ''}`;
+  }
+
+  #control(args) {
+    const action = asText(args?.action) || 'status';
+    if (action === 'status') return { text: this.#controlSays() };
+    if (action !== 'set') return { text: '[tts_control 没执行] action 只能是 status 或 set。', failed: true };
+
+    const patch = {};
+    if (args?.delivery !== undefined) {
+      const delivery = asText(args.delivery);
+      if (!DELIVERIES.includes(delivery)) return { text: '[tts_control 没执行] delivery 只能是 wait 或 event。', failed: true };
+      patch.delivery = delivery;
+    }
+    if (args?.eventDelivery !== undefined) {
+      const route = asText(args.eventDelivery);
+      if (!EVENT_DELIVERIES.includes(route)) return { text: '[tts_control 没执行] eventDelivery 只能是 archive 或 model。', failed: true };
+      patch.eventDelivery = route;
+    }
+    if (args?.autoSpeak !== undefined) {
+      if (typeof args.autoSpeak !== 'boolean') return { text: '[tts_control 没执行] autoSpeak 只能是 true 或 false。', failed: true };
+      patch.autoSpeak = args.autoSpeak;
+    }
+    if (Object.keys(patch).length === 0) return { text: '[tts_control 没执行] set 至少要给一项。', failed: true };
+
+    try {
+      this.#persist?.(patch);
+    } catch (err) {
+      return { text: `[tts_control 失败] 配置没写进去：${msg(err)}`, failed: true };
+    }
+    for (const [key, value] of Object.entries(patch)) this.cfg[key] = value;
+    // 打开自动朗读只处理之后的新气泡，不补读此前的。
+    if (patch.autoSpeak === true) this.#voiceCursor = this.#host?.store?.latestCursor?.() ?? this.#voiceCursor;
+    return { text: `已更新：${this.#controlSays()}` };
+  }
+
+  /** 扫一遍桌宠气泡；关着自动朗读时只把游标推到最新，打开后不补读旧气泡。 */
+  async #scanPet() {
+    const host = this.#host;
+    if (!host) return;
+    try {
+      if (!this.#bool('autoSpeak')) {
+        this.#voiceCursor = host.store.latestCursor();
+        return;
+      }
+      const events = host.store.range({ fromCursor: this.#voiceCursor + 1, limit: 50 });
+      for (const event of events) {
+        this.#voiceCursor = Math.max(this.#voiceCursor, event.cursor);
+        if (event.type !== PET_EVENT) continue;
+        const line = this.#lineOf(event);
+        if (line) this.#submitAuto(line);
+      }
+    } catch (err) {
+      this.#lastError = `${new Date().toISOString()} 读气泡事件失败：${msg(err)}`;
+    }
+  }
+
+  /** 气泡说出来的话：say 的 beats 拼起来，ask 只读问题。 */
+  #lineOf(event) {
+    const meta = event.meta ?? {};
+    if (meta.kind === 'say' && Array.isArray(meta.beats)) {
+      const text = meta.beats
+        .map((beat) => (beat && typeof beat.text === 'string' ? beat.text : ''))
+        .filter(Boolean)
+        .join('。 ');
+      return speakable(text);
+    }
+    if (meta.kind === 'ask' && typeof meta.question === 'string') return speakable(meta.question);
+    return '';
+  }
+
+  #submitAuto(line) {
+    if (!this.#host) return;
+    if (Date.now() - this.#autoFailedAt < AUTO_FAIL_COOLDOWN_MS) return;
+    const env = this.#envState();
+    if (!env.ok) {
+      this.#autoFailedAt = Date.now();
+      this.#lastError = `${new Date().toISOString()} 自动朗读未就绪：${env.detail}`;
+      this.#host.log?.warn?.('自动朗读未就绪', { detail: env.detail });
+      return;
+    }
+    const prep = this.#prepare({ text: line, note: '桌宠气泡' });
+    if (prep.outcome) {
+      this.#autoFailedAt = Date.now();
+      this.#lastError = `${new Date().toISOString()} 自动朗读没提交：${prep.outcome.text}`;
+      return;
+    }
+    const epoch = this.#jobEpoch;
+    this.#busy += 1;
+    this.#enqueueJob(async () => {
+      if (epoch !== this.#jobEpoch || !this.#bool('autoSpeak')) {
+        this.#busy -= 1;
+        return;
+      }
+      try {
+        const res = await this.#request(prep, this.#abort?.signal);
+        const { seconds, item } = this.#store(prep, res);
+        await this.#pushVoice({ prep, res, seconds, item, origin: 'pet' });
+      } catch (err) {
+        this.#autoFailedAt = Date.now();
+        if (epoch === this.#jobEpoch) await this.#pushFailed(prep, err, 'pet');
+      } finally {
+        this.#busy -= 1;
+      }
+    });
   }
 
   #failure(tool, err) {
@@ -432,9 +714,13 @@ export class TtsWorld {
       count: clips.count,
       totalBytes: clips.totalBytes,
       busy: this.#busy > 0,
+      queue: this.#busy,
       lastError: this.#lastError,
       lastItemAt: this.#lastItemAt,
       protocol: this.#protocol(),
+      delivery: this.#deliveryOf({}),
+      eventDelivery: this.#eventDelivery(),
+      autoSpeak: this.#bool('autoSpeak'),
       baseUrl: env.baseUrl,
       model: env.model,
       voice: env.voice,
@@ -615,20 +901,36 @@ export class TtsWorld {
 
   async start(host) {
     this.#host = host;
+    if (this.#timer) clearInterval(this.#timer);
+    this.#jobEpoch += 1;
+    this.#abort = new AbortController();
+    this.#voiceCursor = host.store.latestCursor();
     try {
       this.#clipsFor().ensure();
     } catch (err) {
       this.#host?.log?.warn?.('文本转语音：数据目录建不出来', { err: msg(err) });
     }
+    this.#timer = setInterval(() => { void this.#scanPet(); }, this.#scanMs);
+    this.#timer.unref?.();
     this.#host?.log?.info?.('文本转语音已就绪', {
       dir: this.dir(),
       model: this.#str('model'),
       voice: this.#str('voice'),
       key: this.apiKey() ? '已配置' : '未配置',
+      delivery: this.#deliveryOf({}),
+      eventDelivery: this.#eventDelivery(),
+      autoSpeak: this.#bool('autoSpeak'),
     });
   }
 
   async stop() {
+    if (this.#timer) {
+      clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    this.#jobEpoch += 1;
+    this.#abort?.abort();
+    this.#abort = null;
     this.#streams.clear();
     this.#host = null;
   }

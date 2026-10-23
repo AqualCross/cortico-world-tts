@@ -8,10 +8,25 @@
 export const ID = 'tts';
 export const LABEL = '文本转语音';
 
+/** 合成结果的事件类型：成功带音频附件，失败只有原因。 */
+export const EVENT_TYPE = 'tts.voice';
+export const EVENT_FAILED_TYPE = 'tts.voice-failed';
+
+/** 桌宠气泡事件；本 World 只读这一种。 */
+export const PET_EVENT = 'desktop-pet.self';
+
+/** 交付方式：wait = 工具调用里等；event = 立刻回执，完成后发事件。 */
+export const DELIVERIES = Object.freeze(['wait', 'event']);
+/** 声音事件去向：archive = 只落事件库；model = 投递到模型事件流。 */
+export const EVENT_DELIVERIES = Object.freeze(['archive', 'model']);
+
 /** `worlds.tts` 段的默认值；`enabled` 由框架的 World 开关管理，其余键与 configGroup 里的路径一一对应。 */
 export const DEFAULTS = Object.freeze({
   enabled: false,
   protocol: 'dashscope',
+  delivery: 'wait',
+  eventDelivery: 'archive',
+  autoSpeak: false,
   baseUrl: 'https://maas.qianwenaiapi.com',
   apiKeySecret: 'AUDIO_API_KEY',
   model: 'qwen-audio-3.1-tts-flash',
@@ -50,6 +65,12 @@ const ZH = {
     title: '文本转语音',
     protocol: '接口协议',
     protocolDesc: '接口形状。',
+    delivery: '交付方式',
+    deliveryDesc: 'wait = 工具调用里等语音合成完再回；event = 立刻回执，合成完成后作为声音事件送达（去向由「声音事件去向」决定）。',
+    eventDelivery: '声音事件去向',
+    eventDeliveryDesc: 'archive = 只落事件库，播放扩展能读到，但不唤醒桌宠；model = 投递到对话事件流，桌宠会被唤醒。自动朗读也走这里。',
+    autoSpeak: '自动朗读桌宠气泡',
+    autoSpeakDesc: '把桌宠在气泡里说的话（say / ask）合成为语音并发成声音事件；只处理启用之后的新气泡，重启不补。本身不出声，播放交给监听这类事件的播放扩展。',
     baseUrl: '接口地址',
     baseUrlDesc: '接口的根地址。',
     keyName: '密钥变量名',
@@ -99,6 +120,12 @@ const EN = {
     title: 'Text to Speech',
     protocol: 'Protocol',
     protocolDesc: 'Request shape.',
+    delivery: 'Delivery',
+    deliveryDesc: 'wait = block the tool call until the audio is ready; event = return at once and deliver the audio as an event (where it goes is set by Event destination).',
+    eventDelivery: 'Event destination',
+    eventDeliveryDesc: 'archive = store the event without waking the pet (a playback extension can still read it); model = deliver it to the conversation, waking the pet. Auto-speak uses the same destination.',
+    autoSpeak: 'Speak the pet\'s bubbles',
+    autoSpeakDesc: 'Synthesize what the pet says in bubbles (say / ask) into speech events; only new bubbles after this is enabled, nothing is replayed on restart. It does not play sound; a playback extension listening for these events does.',
     baseUrl: 'Endpoint',
     baseUrlDesc: 'Root URL of the API.',
     keyName: 'Secret name',
@@ -148,6 +175,13 @@ export function configGroup(language = 'zh') {
           title: t.protocol,
           description: t.protocolDesc,
           enum: ['dashscope', 'openai'],
+          'x-hot': true,
+        },
+        [`${K}.delivery`]: {
+          type: 'string',
+          title: t.delivery,
+          description: t.deliveryDesc,
+          enum: [...DELIVERIES],
           'x-hot': true,
         },
         [`${K}.baseUrl`]: { type: 'string', title: t.baseUrl, description: t.baseUrlDesc, 'x-hot': true },
@@ -207,6 +241,14 @@ export function configGroup(language = 'zh') {
           'x-suffix': ' 条',
         },
         [`${K}.pushToConsole`]: { type: 'boolean', title: t.push, description: t.pushDesc, 'x-hot': true },
+        [`${K}.eventDelivery`]: {
+          type: 'string',
+          title: t.eventDelivery,
+          description: t.eventDeliveryDesc,
+          enum: [...EVENT_DELIVERIES],
+          'x-hot': true,
+        },
+        [`${K}.autoSpeak`]: { type: 'boolean', title: t.autoSpeak, description: t.autoSpeakDesc, 'x-hot': true },
       },
     },
   };

@@ -1,8 +1,8 @@
 {
   "name": "cortico-world-tts",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
-  "description": "文本转语音（Text to Speech）—— 给 Coopanion 桌宠的 cortico World 扩展：把文字合成为语音，音频落盘并作为附件交回对话。 / A cortico World extension that turns text into speech through a configurable TTS API and returns the audio as a conversation attachment.",
+  "description": "文本转语音（Text to Speech）—— 给 Coopanion 桌宠的 cortico World 扩展：把文字合成为语音，音频落盘并作为附件交回对话；也可以先回执、完成后发声音事件，并把桌宠气泡自动合成成语音事件。 / A cortico World extension that turns text into speech through a configurable TTS API and returns the audio as a conversation attachment; it can also deliver the audio later as an event and synthesize the pet's bubbles automatically.",
   "license": "MIT",
   "author": {
     "name": "AqualCross"
